@@ -1,4 +1,6 @@
 import cv2
+import streamlit as st
+import cv2
 import os
 import face_recognition
 import pickle
@@ -11,8 +13,12 @@ from firebase_admin import db
 from firebase_admin import storage
 from datetime import datetime
 
+
 cred = credentials.Certificate("firebaseKey.json")
-firebase_admin.initialize_app(cred, {
+try:
+    app = firebase_admin.get_app()
+except ValueError:
+    app = firebase_admin.initialize_app(cred, {
     'databaseURL':"https://facerec-bae67-default-rtdb.firebaseio.com",
     'storageBucket':"facerec-bae67.appspot.com"
 })
@@ -22,17 +28,17 @@ bucket = storage.bucket()
 cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 cap.set(3, 640)
 cap.set(4, 480)
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 imgBg = cv2.imread('resource/background.png')
 path = ('resource/Modes')
 modePath = os.listdir(path)
+modeType = 0
+counter = 0
 imgModeList = []
 
 for i in modePath:
     imgModeList.append(cv2.imread(os.path.join(path, i)))
-# just cheking 
-# print(modePath)
-# print(len(imgModeList))
 
 file = open('EncodeFile.p', 'rb')
 encodeListKnownWithIds = pickle.load(file)
@@ -40,20 +46,37 @@ file.close()
 encodeListKnown, studentIds = encodeListKnownWithIds
 # print(studentIds)
 
-modeType = 0
-counter = 0
-id = -1
-imgStudent = []
+# Set the title for the Streamlit app
+st.title("Video Capture with OpenCV")
 
-while True:
-    success, img = cap.read()
-    imgS = cv2.resize(img, (0,0), None, 0.25, 0.25)
-    imgS = cv2.cvtColor(imgS, cv2.COLOR_BGR2RGB)
+frame_placeholder = st.empty()
+
+# Add a "Stop" button and store its state in a variable
+stop_button_pressed = st.button("Stop")
+blobs = bucket.list_blobs(prefix='images')
+blob_list = list(blobs)
+
+studentIdList = db.reference(f'Students').get()
+
+while cap.isOpened() and not stop_button_pressed:
+    ret, frame = cap.read()
+    
+    if not ret:
+        st.write("The video capture has ended.")
+        break
+
+    # You can process the frame here if needed
+    # e.g., apply filters, transformations, or object detection
+
+    # Convert the frame from BGR to RGB format
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    imgS = cv2.resize(frame, (0,0), None, 0.25, 0.25)
+    # imgS = cv2.cvtColor(imgS, cv2.COLOR_BGR2RGB)
 
     faceCurFrame = face_recognition.face_locations(imgS)
     encodeCurFrame = face_recognition.face_encodings(imgS, faceCurFrame)
 
-    imgBg[162:162+480, 55:55+640] = img
+    imgBg[162:162+480, 55:55+640] = frame
     imgBg[44:44+633, 808:808+414] = imgModeList[modeType]
 
     if faceCurFrame:
@@ -78,8 +101,7 @@ while True:
 
             if counter == 0:
                 cvzone.putTextRect(imgBg, "Loading", (275, 400))
-                cv2.imshow("Face recognize", imgBg)
-                cv2.waitKey(1)
+                frame_placeholder.image(imgBg, channels="RGB")
                 counter = 1
                 modeType = 1
         if counter != 0:
@@ -88,13 +110,13 @@ while True:
                 print(id)
                 print(studentInfo)
                 # get image from db storage
-                blobs = bucket.list_blobs(prefix='images')
-                for blob in blobs:
-                    if(id in blob.name.split('.')[0]):
-                        print(blob.name.split('.')[-1], id)
-                        data = blob.download_as_string()
+                for i in range (len(blob_list)):
+                    if(id in blob_list[i].name.split('.')[0]):
+                        print(blob_list[i].name.split('.')[-1], id)
+                        data = blob_list[i].download_as_string()
                         array = np.frombuffer(data, np.uint8)
                         imgStudent = cv2.imdecode(array, cv2.COLOR_BGRA2BGR)
+                        imgStudent = cv2.cvtColor(imgStudent, cv2.COLOR_BGR2RGB)
                 # update data of time
                 datetimeObject = datetime.strptime(studentInfo['update_time'],
                                                     "%Y-%m-%d %H:%M:%S")
@@ -103,7 +125,7 @@ while True:
                 ref = db.reference(f'Students/{id}')
                 # studentInfo['total_attendance'] += 1 no need for this i want to change come up time only
                 ref.child('update_time').set(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                if secondsElapsed > 30:
+                if secondsElapsed > 1:
                     ref = db.reference(f'Students/{id}')
                     # studentInfo['total_attendance'] += 1 no need for this i want to change come up time only
                     ref.child('update_time').set(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -145,8 +167,16 @@ while True:
     else:
         modeType = 0
         counter = 0
-    # cv2.imshow("Webcam", img)
-    cv2.imshow("Face recognize", imgBg)
-    cv2.waitKey(1)
+    
 
-#webcam setup complete
+    # imgBg = cv2.cvtColor(imgBg, cv2.COLOR_BGR2RGB)
+    # Display the frame using Streamlit's st.image
+    cv2.waitKey(1)
+    frame_placeholder.image(imgBg, channels="RGB")
+
+    # Break the loop if the 'q' key is pressed or the user clicks the "Stop" button
+    if cv2.waitKey(1) & 0xFF == ord("q") or stop_button_pressed: 
+        break
+
+cap.release()
+cv2.destroyAllWindows()
